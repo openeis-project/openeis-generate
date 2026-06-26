@@ -21,6 +21,10 @@ use crate::variables::Variables;
 /// the output name (`README.md.liquid` → `README.md`).
 pub const LIQUID_SUFFIX: &str = ".liquid";
 
+/// A template-root file whose lines are extra `ignore` globs (one per line,
+/// `#` comments / blank lines skipped). Always excluded from the output itself.
+pub const IGNORE_FILE_NAME: &str = ".genignore";
+
 /// Paths that are never copied out of a template.
 const NEVER_COPY: &[&str] = &[".git"];
 
@@ -57,6 +61,12 @@ pub fn render_template(text: &str, vars: &Variables) -> Result<String> {
     render_with(&parser, text, &object)
 }
 
+/// Build the Liquid parser with the case-conversion filters registered. Public
+/// so tests can render with the same filter set the generator uses.
+pub fn parser_with_filters() -> Parser {
+    build_parser().expect("liquid parser with filters always builds")
+}
+
 /// Copy `template_dir` into `dest_dir`, rendering file names and contents.
 pub fn expand(
     template_dir: &Path,
@@ -72,7 +82,11 @@ pub fn expand(
     let object = to_object(vars);
     let include = build_globset(&opts.include)?;
     let exclude = build_globset(&opts.exclude)?;
-    let ignore = build_globset(&opts.ignore)?;
+    // The ignore set combines the config `ignore` globs with a template-root
+    // `.genignore` file (if present).
+    let mut ignore_patterns = opts.ignore.clone();
+    ignore_patterns.extend(load_genignore(template_dir));
+    let ignore = build_globset(&ignore_patterns)?;
     let mut stats = GenerationStats::default();
 
     for entry in WalkDir::new(template_dir)
@@ -84,8 +98,11 @@ pub fn expand(
         let rel = entry.path().strip_prefix(template_dir)?;
         let rel_str = rel.to_string_lossy().replace('\\', "/");
 
-        // Never copy the config file or top-level never-copy entries.
-        if rel_str == crate::CONFIG_FILE_NAME || never_copy(&rel_str) {
+        // Never copy the config file, the .genignore file, or never-copy entries.
+        if rel_str == crate::CONFIG_FILE_NAME
+            || rel_str == IGNORE_FILE_NAME
+            || never_copy(&rel_str)
+        {
             continue;
         }
 
@@ -114,10 +131,19 @@ pub fn expand(
 }
 
 fn build_parser() -> Result<Parser> {
-    Ok(ParserBuilder::with_stdlib().build()?)
+    Ok(ParserBuilder::with_stdlib()
+        .filter(crate::template_filters::KebabCaseFilterParser)
+        .filter(crate::template_filters::LowerCamelCaseFilterParser)
+        .filter(crate::template_filters::PascalCaseFilterParser)
+        .filter(crate::template_filters::ShoutyKebabCaseFilterParser)
+        .filter(crate::template_filters::ShoutySnakeCaseFilterParser)
+        .filter(crate::template_filters::SnakeCaseFilterParser)
+        .filter(crate::template_filters::TitleCaseFilterParser)
+        .filter(crate::template_filters::UpperCamelCaseFilterParser)
+        .build()?)
 }
 
-fn to_object(vars: &Variables) -> Object {
+pub(crate) fn to_object(vars: &Variables) -> Object {
     let mut o = Object::new();
     for (k, v) in vars.iter() {
         o.insert(KString::from_ref(k), Value::scalar(v.clone()));
@@ -184,6 +210,23 @@ fn build_globset(patterns: &[String]) -> Result<GlobSet> {
         b.add(Glob::new(p).with_context(|| format!("invalid glob `{p}`"))?);
     }
     Ok(b.build()?)
+}
+
+/// Patterns from a template-root `.genignore` file: one glob per line, `#`
+/// comments and blank lines skipped. Returns an empty vec when the file is
+/// absent. These are *globs* (merged into the `ignore` filter), NOT gitignore —
+/// there is no `!` negation or `/`-anchoring semantics, matching the
+/// config-level `ignore` globs.
+fn load_genignore(template_dir: &Path) -> Vec<String> {
+    let Ok(contents) = std::fs::read_to_string(template_dir.join(IGNORE_FILE_NAME)) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn passes_filters(rel: &str, include: &GlobSet, exclude: &GlobSet, ignore: &GlobSet) -> bool {
@@ -351,5 +394,63 @@ mod tests {
         assert_eq!(fs::read(dst.path().join("blob.bin")).unwrap(), bytes);
         assert_eq!(stats.files_copied, 1);
         assert_eq!(stats.files_rendered, 0);
+    }
+
+    #[test]
+    fn case_filters_apply_in_contents_and_filenames() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        write(src.path(), "lib.rs", "// {{ name | snake_case }}\n");
+        write(src.path(), "{{ name | kebab_case }}.txt", "pascal={{ name | pascal_case }}");
+
+        expand(
+            src.path(),
+            dst.path(),
+            &vars(&[("name", "My Cool Project")]),
+            &GenerationOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.path().join("lib.rs")).unwrap(),
+            "// my_cool_project\n"
+        );
+        let out = dst.path().join("my-cool-project.txt");
+        assert!(out.exists(), "kebab_case filter should render the filename");
+        assert_eq!(fs::read_to_string(&out).unwrap(), "pascal=MyCoolProject");
+    }
+
+    #[test]
+    fn genignore_excludes_patterns_and_itself() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        write(src.path(), "keep.txt", "kept");
+        write(src.path(), "secret.key", "shh");
+        write(src.path(), "debug.log", "log");
+        write(src.path(), "nested/keep.txt", "kept");
+        write(src.path(), "nested/debug.log", "log");
+        // The .genignore file itself (glob patterns, # comments allowed).
+        write(src.path(), crate::generate::IGNORE_FILE_NAME, "# secrets\n*.key\n*.log\n");
+
+        expand(
+            src.path(),
+            dst.path(),
+            &Variables::default(),
+            &GenerationOptions::default(),
+        )
+        .unwrap();
+
+        assert!(dst.path().join("keep.txt").exists());
+        assert!(dst.path().join("nested/keep.txt").exists());
+        assert!(!dst.path().join("secret.key").exists(), "*.key ignored");
+        assert!(!dst.path().join("debug.log").exists(), "*.log ignored");
+        assert!(
+            !dst.path().join("nested/debug.log").exists(),
+            "*.log ignored in subdirs"
+        );
+        assert!(
+            !dst.path().join(crate::generate::IGNORE_FILE_NAME).exists(),
+            ".genignore must not be copied out"
+        );
     }
 }

@@ -101,6 +101,12 @@ impl Placeholder {
     pub fn is_string(&self) -> bool {
         self.r#type.eq_ignore_ascii_case("string")
     }
+
+    /// `"array"` — a multi-select placeholder. Its value is stored as a
+    /// comma-joined string (see [`crate::variables::resolve_array`]).
+    pub fn is_array(&self) -> bool {
+        self.r#type.eq_ignore_ascii_case("array")
+    }
 }
 
 /// Hook execution phase. Optimization 3: one keyed getter replaces three

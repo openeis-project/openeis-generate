@@ -10,9 +10,13 @@
 //! only the thin [`prompt`] helpers touch `dialoguer`.
 
 use anyhow::{Context, Result};
+use heck::ToSnakeCase;
 use indexmap::IndexMap;
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use std::path::Path;
+use std::process::Command;
 use thiserror::Error;
 
 use crate::config::{Config, Placeholder};
@@ -27,6 +31,7 @@ pub const RESERVED_NAMES: &[&str] = &[
     "crate_type",
     "within_cargo_project",
     "is_init",
+    "username",
 ];
 
 /// Resolved template variables, all stringified (liquid consumes strings).
@@ -51,8 +56,10 @@ pub enum VariableError {
     ReservedName(String),
     #[error("missing prompt for placeholder `{0}`")]
     MissingPrompt(String),
-    #[error("invalid placeholder type `{value}` for `{var_name}` (expected `bool` or `string`)")]
+    #[error("invalid placeholder type `{value}` for `{var_name}` (expected `bool`, `string`, or `array`)")]
     InvalidType { var_name: String, value: String },
+    #[error("default for array placeholder `{var_name}` must be a list, got `{value}`")]
+    InvalidArrayDefault { var_name: String, value: String },
     #[error("default `{default}` for `{var_name}` is not one of choices {choices:?}")]
     InvalidDefault {
         var_name: String,
@@ -98,6 +105,39 @@ pub fn parse_defines(defines: &[String]) -> Result<IndexMap<String, String>> {
     Ok(map)
 }
 
+/// Load template variables from a KDL `--values-file` of the form
+/// `values { key "value" … }`. Each value is stringified to match how resolved
+/// variables are stored: scalars via [`json_to_string`], and arrays (e.g.
+/// `features "auth" "logging"`) joined with commas so they feed an array
+/// placeholder the same way a comma-joined `--define` does.
+pub fn load_values_file(path: &Path) -> Result<IndexMap<String, String>> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("reading values file {}", path.display()))?;
+
+    #[derive(Deserialize)]
+    struct Wrapper {
+        values: Option<IndexMap<String, JsonValue>>,
+    }
+    let w: Wrapper = kdl::de::from_str(&contents)
+        .map_err(|e| anyhow::anyhow!("failed to parse values file {}: {e}", path.display()))?;
+
+    let mut out = IndexMap::new();
+    for (k, v) in w.values.unwrap_or_default() {
+        out.insert(k, value_file_to_string(&v));
+    }
+    Ok(out)
+}
+
+/// Stringify a `--values-file` entry. Arrays are comma-joined (so an array
+/// placeholder receives `"a,b"` like a comma-separated `--define`); everything
+/// else uses [`json_to_string`].
+fn value_file_to_string(v: &JsonValue) -> String {
+    match v {
+        JsonValue::Array(arr) => arr.iter().map(json_to_string).collect::<Vec<_>>().join(","),
+        other => json_to_string(other),
+    }
+}
+
 /// What to do with one placeholder, given any value supplied via `--define`
 /// (`provided`) and whether we may prompt (`silent` = no prompting allowed).
 //
@@ -116,6 +156,13 @@ pub enum Resolved {
     /// Needs an interactive bool prompt.
     PromptBool {
         default: Option<bool>,
+    },
+    /// Needs an interactive multi-select (array) prompt. `default` are the
+    /// pre-selected entries; `choices` is the selectable set (possibly empty,
+    /// in which case the prompt falls back to free-form comma input).
+    PromptArray {
+        default: Vec<String>,
+        choices: Vec<String>,
     },
 }
 
@@ -143,12 +190,54 @@ pub fn resolve(
         return Err(VariableError::MissingPrompt(name.into()));
     }
 
-    let choices: Vec<String> = p
-        .choices
-        .iter()
-        .flatten()
-        .map(json_to_string)
-        .collect();
+    let choices: Vec<String> = p.choices.iter().flatten().map(json_to_string).collect();
+
+    if p.is_bool() {
+        return resolve_bool(name, p, provided, silent);
+    }
+    if p.is_array() {
+        return resolve_array(name, p, provided, silent, &choices);
+    }
+    if !p.is_string() {
+        return Err(VariableError::InvalidType {
+            var_name: name.into(),
+            value: p.r#type.clone(),
+        });
+    }
+    resolve_string(name, p, provided, silent, &choices)
+}
+
+/// Bool branch: ignores `choices`/`regex`. `--define` normalizes; silent uses
+/// the default; otherwise an interactive confirm is requested.
+fn resolve_bool(
+    name: &str,
+    p: &Placeholder,
+    provided: Option<&str>,
+    silent: bool,
+) -> Result<Resolved, VariableError> {
+    if let Some(raw) = provided {
+        let normalized = normalize_bool(raw)
+            .ok_or_else(|| VariableError::InvalidBool(name.into(), raw.into()))?;
+        return Ok(Resolved::Value(normalized));
+    }
+    let default = p.default.as_ref().and_then(JsonValue::as_bool);
+    if silent {
+        default
+            .map(|b| Resolved::Value(b.to_string()))
+            .ok_or_else(|| VariableError::MissingSilent(name.into()))
+    } else {
+        Ok(Resolved::PromptBool { default })
+    }
+}
+
+/// String branch: `choices` (single-select) and `regex` validation apply.
+fn resolve_string(
+    name: &str,
+    p: &Placeholder,
+    provided: Option<&str>,
+    silent: bool,
+    choices: &[String],
+) -> Result<Resolved, VariableError> {
     let regex = match p.regex.as_ref() {
         Some(pattern) => Some(Regex::new(pattern).map_err(|e| VariableError::InvalidRegex {
             var_name: name.into(),
@@ -164,41 +253,17 @@ pub fn resolve(
             return Err(VariableError::InvalidDefault {
                 var_name: name.into(),
                 default: default_str,
-                choices: choices.clone(),
+                choices: choices.to_vec(),
             });
         }
     }
 
-    // 1) Explicit --define wins (after validation).
+    // Explicit --define wins (after validation).
     if let Some(raw) = provided {
-        if p.is_bool() {
-            let normalized = normalize_bool(raw)
-                .ok_or_else(|| VariableError::InvalidBool(name.into(), raw.into()))?;
-            return Ok(Resolved::Value(normalized));
-        }
-        validate_string(name, raw, &choices, regex.as_ref())?;
+        validate_string(name, raw, choices, regex.as_ref())?;
         return Ok(Resolved::Value(raw.to_string()));
     }
 
-    // 2) Bool placeholder.
-    if p.is_bool() {
-        let default = p.default.as_ref().and_then(JsonValue::as_bool);
-        return if silent {
-            default
-                .map(|b| Resolved::Value(b.to_string()))
-                .ok_or_else(|| VariableError::MissingSilent(name.into()))
-        } else {
-            Ok(Resolved::PromptBool { default })
-        };
-    }
-
-    // 3) String (or unknown) placeholder.
-    if !p.is_string() {
-        return Err(VariableError::InvalidType {
-            var_name: name.into(),
-            value: p.r#type.clone(),
-        });
-    }
     let default = p.default.as_ref().map(json_to_string);
     if silent {
         return default
@@ -207,8 +272,80 @@ pub fn resolve(
     }
     Ok(Resolved::PromptString {
         default,
-        choices,
+        choices: choices.to_vec(),
         regex,
+    })
+}
+
+/// Array branch (multi-select). The resolved value is a comma-joined string.
+///
+/// KDL ambiguity note: a single-argument `default "x"` deserializes to a JSON
+/// scalar string while `default "x" "y"` becomes an array — both are accepted
+/// (the scalar is treated as a one-element default). `--define` is parsed as a
+/// comma-separated list.
+fn resolve_array(
+    name: &str,
+    p: &Placeholder,
+    provided: Option<&str>,
+    silent: bool,
+    choices: &[String],
+) -> Result<Resolved, VariableError> {
+    let default: Vec<String> = match p.default.as_ref() {
+        None => Vec::new(),
+        Some(JsonValue::Array(arr)) => arr.iter().map(json_to_string).collect(),
+        Some(JsonValue::String(s)) => vec![s.clone()],
+        Some(other) => {
+            return Err(VariableError::InvalidArrayDefault {
+                var_name: name.into(),
+                value: other.to_string(),
+            })
+        }
+    };
+
+    // Every default entry must be among the choices (when choices constrain it).
+    if !choices.is_empty() {
+        for d in &default {
+            if !choices.contains(d) {
+                return Err(VariableError::InvalidDefault {
+                    var_name: name.into(),
+                    default: d.clone(),
+                    choices: choices.to_vec(),
+                });
+            }
+        }
+    }
+
+    if let Some(raw) = provided {
+        let vals: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !choices.is_empty() {
+            for v in &vals {
+                if !choices.contains(v) {
+                    return Err(VariableError::InvalidChoice {
+                        var_name: name.into(),
+                        value: v.clone(),
+                        choices: choices.to_vec(),
+                    });
+                }
+            }
+        }
+        return Ok(Resolved::Value(vals.join(",")));
+    }
+
+    if silent {
+        return if default.is_empty() {
+            Err(VariableError::MissingSilent(name.into()))
+        } else {
+            Ok(Resolved::Value(default.join(",")))
+        };
+    }
+
+    Ok(Resolved::PromptArray {
+        default,
+        choices: choices.to_vec(),
     })
 }
 
@@ -301,6 +438,11 @@ pub fn resolve_placeholders_into(
                     .with_context(|| format!("prompting for `{name}`"))?;
                 vars.0.insert(name.clone(), b.to_string());
             }
+            Resolved::PromptArray { default, choices } => {
+                let v = prompt_array(&p.prompt, &default, &choices)
+                    .with_context(|| format!("prompting for `{name}`"))?;
+                vars.0.insert(name.clone(), v);
+            }
         }
     }
     Ok(())
@@ -350,6 +492,124 @@ fn prompt_bool(prompt: &str, default: bool) -> Result<bool> {
         .with_prompt(prompt)
         .default(default)
         .interact()?)
+}
+
+/// Multi-select prompt for an array placeholder. The selection is returned as
+/// a comma-joined string. With no `choices` the prompt falls back to free-form
+/// comma-separated text input.
+fn prompt_array(prompt: &str, default: &[String], choices: &[String]) -> Result<String> {
+    if choices.is_empty() {
+        use dialoguer::Input;
+        let pre = default.join(",");
+        let mut input: Input<String> = Input::new().with_prompt(prompt);
+        if !pre.is_empty() {
+            input = input.default(pre);
+        }
+        let raw: String = input.interact_text()?;
+        return Ok(raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(","));
+    }
+
+    use dialoguer::MultiSelect;
+    let defaults: Vec<bool> = choices.iter().map(|c| default.contains(c)).collect();
+    let selected = MultiSelect::new()
+        .with_prompt(prompt)
+        .items(choices)
+        .defaults(&defaults)
+        .interact()?;
+    Ok(selected
+        .iter()
+        .map(|&i| choices[i].clone())
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+// --- built-in variables -----------------------------------------------------
+
+/// Seed the generator-supplied built-in variables (the [`RESERVED_NAMES`]) into
+/// `vars`, mirroring cargo-generate's always-available variables so templates
+/// can reference `{{ crate_name }}`, `{{ authors }}`, `{{ os-arch }}`, etc.
+/// without a placeholder. Existing entries are left untouched, so a pre-hook or
+/// `--define` may still influence them (placeholders themselves can't claim
+/// reserved names — see [`resolve`]).
+///
+/// `name` is the `--name` value (drives `name`, `project-name`, `crate_name`);
+/// `is_init` is whether `--init` was passed.
+pub fn seed_builtins(vars: &mut Variables, name: Option<&str>, is_init: bool) {
+    let map = &mut vars.0;
+    if let Some(n) = name {
+        map.entry("name".into()).or_insert(n.to_string());
+        map.entry("project-name".into()).or_insert(n.to_string());
+        map.entry("crate_name".into()).or_insert(n.to_snake_case());
+    }
+    // No --lib/--bin flag (cargo-generate derives crate_type from those);
+    // default to "bin" so `crate_type`-keyed conditionals resolve.
+    map.entry("crate_type".into()).or_insert("bin".to_string());
+    map.entry("os-arch".into())
+        .or_insert(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH));
+    map.entry("is_init".into()).or_insert(is_init.to_string());
+    map.entry("within_cargo_project".into())
+        .or_insert(within_cargo_project().to_string());
+
+    if let Some((author, username)) = discover_author() {
+        map.entry("authors".into()).or_insert(author);
+        map.entry("username".into()).or_insert(username);
+    }
+}
+
+/// Best-effort author discovery, mirroring cargo-generate (itself taken from
+/// `cargo new`). Unlike cargo-generate we read `git config` through the external
+/// git binary instead of libgit2, consistent with the rest of this crate.
+/// Returns `(authors_string, username)` or `None` when no name is discoverable.
+fn discover_author() -> Option<(String, String)> {
+    fn env_of(vars: &[&str]) -> Option<String> {
+        vars.iter().filter_map(|v| std::env::var(v).ok()).next()
+    }
+
+    let name = env_of(&["CARGO_NAME", "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"])
+        .or_else(|| git_config("user.name"))
+        .or_else(|| env_of(&["USER", "USERNAME", "NAME"]))?;
+    let email = env_of(&["CARGO_EMAIL", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"])
+        .or_else(|| git_config("user.email"))
+        .or_else(|| std::env::var("EMAIL").ok());
+
+    let name = name.trim().to_string();
+    let email = email.map(|e| e.trim().trim_start_matches('<').trim_end_matches('>').to_string());
+    let author = match email {
+        Some(email) if !email.is_empty() => format!("{name} <{email}>"),
+        _ => name.clone(),
+    };
+    Some((author, name))
+}
+
+/// Read a value from `git config` (best-effort; errors / missing → `None`).
+fn git_config(key: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["config", "--get", key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// True if any ancestor of the current directory contains a `Cargo.toml`
+/// (i.e. we appear to be generating inside an existing Cargo workspace/project).
+fn within_cargo_project() -> bool {
+    let mut dir = std::env::current_dir().ok();
+    while let Some(d) = dir {
+        if d.join("Cargo.toml").exists() {
+            return true;
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -522,6 +782,11 @@ mod tests {
             resolve("crate_type", &p, None, false).unwrap_err(),
             VariableError::ReservedName("crate_type".into())
         );
+        // username is now a reserved built-in too.
+        assert_eq!(
+            resolve("username", &p, None, false).unwrap_err(),
+            VariableError::ReservedName("username".into())
+        );
 
         let no_prompt = Placeholder {
             prompt: "  ".into(),
@@ -531,5 +796,139 @@ mod tests {
             resolve("v", &no_prompt, None, false),
             Err(VariableError::MissingPrompt(_))
         ));
+    }
+
+    #[test]
+    fn seed_builtins_populates_expected_keys() {
+        let mut v = Variables::default();
+        seed_builtins(&mut v, Some("My Project"), true);
+
+        assert_eq!(v.get("name"), Some("My Project"));
+        assert_eq!(v.get("project-name"), Some("My Project"));
+        assert_eq!(v.get("crate_name"), Some("my_project")); // snake_case of the name
+        assert_eq!(v.get("crate_type"), Some("bin"));
+        assert_eq!(v.get("is_init"), Some("true"));
+        // os-arch is "<os>-<arch>"; just assert it's set and shaped.
+        let os_arch = v.get("os-arch").unwrap();
+        assert!(os_arch.contains('-'), "os-arch = {os_arch:?}");
+        assert!(v.get("within_cargo_project").is_some());
+        // authors/username resolve from the environment in CI; assert shape only.
+        if let Some(authors) = v.get("authors") {
+            assert!(v.get("username").is_some(), "username set when authors is");
+            let _ = authors; // e.g. "Name <email>"
+        }
+    }
+
+    #[test]
+    fn seed_builtins_without_name_omits_name_keys() {
+        let mut v = Variables::default();
+        seed_builtins(&mut v, None, false);
+        assert!(v.get("name").is_none());
+        assert!(v.get("project-name").is_none());
+        assert!(v.get("crate_name").is_none());
+        // non-name built-ins are still set.
+        assert_eq!(v.get("crate_type"), Some("bin"));
+        assert_eq!(v.get("is_init"), Some("false"));
+    }
+
+    fn array_placeholder(default: Option<JsonValue>) -> Placeholder {
+        Placeholder {
+            r#type: "array".into(),
+            prompt: "Features?".into(),
+            default,
+            choices: Some(vec![
+                JsonValue::String("auth".into()),
+                JsonValue::String("logging".into()),
+                JsonValue::String("metrics".into()),
+            ]),
+            regex: None,
+        }
+    }
+
+    #[test]
+    fn array_define_is_comma_split_and_validated() {
+        let p = array_placeholder(None);
+        // comma-separated --define, all valid
+        assert_eq!(
+            resolve("feat", &p, Some("auth, metrics"), false).unwrap().value(),
+            Some("auth,metrics")
+        );
+        // unknown choice rejected
+        assert!(matches!(
+            resolve("feat", &p, Some("auth,nope"), false),
+            Err(VariableError::InvalidChoice { .. })
+        ));
+    }
+
+    #[test]
+    fn array_default_accepts_scalar_and_list_forms() {
+        // KDL `default "auth"` → scalar; treated as a one-element default.
+        let p = array_placeholder(Some(JsonValue::String("auth".into())));
+        let r = resolve("feat", &p, None, true).unwrap(); // silent → uses default
+        assert_eq!(r.value(), Some("auth"));
+
+        // KDL `default "auth" "logging"` → array.
+        let p = array_placeholder(Some(JsonValue::Array(vec![
+            JsonValue::String("auth".into()),
+            JsonValue::String("logging".into()),
+        ])));
+        assert_eq!(
+            resolve("feat", &p, None, true).unwrap().value(),
+            Some("auth,logging")
+        );
+
+        // default not in choices → InvalidDefault.
+        let p = array_placeholder(Some(JsonValue::String("nope".into())));
+        assert!(matches!(
+            resolve("feat", &p, None, true),
+            Err(VariableError::InvalidDefault { .. })
+        ));
+    }
+
+    #[test]
+    fn array_default_wrong_type_errors() {
+        // A bool default for an array placeholder is rejected.
+        let p = array_placeholder(Some(JsonValue::Bool(true)));
+        assert!(matches!(
+            resolve("feat", &p, None, true),
+            Err(VariableError::InvalidArrayDefault { .. })
+        ));
+    }
+
+    #[test]
+    fn array_silent_without_default_errors() {
+        let p = array_placeholder(None);
+        assert!(matches!(
+            resolve("feat", &p, None, true),
+            Err(VariableError::MissingSilent(_))
+        ));
+    }
+
+    #[test]
+    fn array_non_silent_requests_prompt() {
+        let p = array_placeholder(Some(JsonValue::String("auth".into())));
+        assert!(matches!(
+            resolve("feat", &p, None, false).unwrap(),
+            Resolved::PromptArray { default, .. } if default == vec!["auth".to_string()]
+        ));
+    }
+
+    #[test]
+    fn load_values_file_parses_and_stringifies() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("values.kdl");
+        fs::write(
+            &path,
+            "values {\n    author \"Alice\"\n    count \"3\"\n    features \"auth\" \"logging\"\n}\n",
+        )
+        .unwrap();
+
+        let m = load_values_file(&path).unwrap();
+        assert_eq!(m.get("author").map(String::as_str), Some("Alice"));
+        assert_eq!(m.get("count").map(String::as_str), Some("3"));
+        // array value → comma-joined
+        assert_eq!(m.get("features").map(String::as_str), Some("auth,logging"));
     }
 }

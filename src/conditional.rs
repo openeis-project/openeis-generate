@@ -16,21 +16,18 @@ use crate::variables::{resolve_placeholders_into, Variables};
 
 /// Collect base + conditional placeholders into `vars` (prompting as needed),
 /// and merge matching conditionals' include/exclude/ignore into the returned
-/// [`GenerationOptions`]. Built-in variables (`name`, `project-name`) are seeded
-/// from `name` first, so conditionals can reference them.
+/// [`GenerationOptions`]. Built-in variables (`name`, `project-name`,
+/// `crate_name`, `crate_type`, …) are seeded from `name`/`is_init` first, so
+/// conditionals can reference them.
 pub fn collect(
     config: &Config,
     defines: &IndexMap<String, String>,
     silent: bool,
     name: Option<&str>,
+    is_init: bool,
 ) -> Result<(Variables, GenerationOptions)> {
     let mut vars = Variables::default();
-    if let Some(n) = name {
-        vars.0.entry("name".into()).or_insert_with(|| n.to_string());
-        vars.0
-            .entry("project-name".into())
-            .or_insert_with(|| n.to_string());
-    }
+    crate::variables::seed_builtins(&mut vars, name, is_init);
 
     let mut effective: IndexMap<String, crate::config::Placeholder> =
         config.placeholders.clone().unwrap_or_default();
@@ -126,7 +123,7 @@ mod tests {
             )],
         );
 
-        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, Some("app")).unwrap();
+        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, Some("app"), false).unwrap();
         assert_eq!(vars.get("lang"), Some("rust"));
         assert_eq!(vars.get("edition"), Some("2024"));
         assert_eq!(vars.get("project-name"), Some("app"));
@@ -153,7 +150,7 @@ mod tests {
             )],
         );
 
-        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, None).unwrap();
+        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, None, false).unwrap();
         assert_eq!(vars.get("lang"), Some("go"));
         assert!(vars.get("edition").is_none(), "conditional placeholder not added");
         assert!(opts.include.is_empty(), "conditional include not merged");
@@ -191,7 +188,7 @@ mod tests {
             ],
         );
 
-        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, None).unwrap();
+        let (vars, opts) = collect(&cfg, &IndexMap::new(), true, None, false).unwrap();
         assert_eq!(vars.get("b"), Some("y"));
         assert_eq!(opts.include, vec!["chained/*".to_string()]);
     }
@@ -205,7 +202,7 @@ mod tests {
                 ConditionalConfig::default(),
             )],
         );
-        let res = collect(&cfg, &IndexMap::new(), true, None);
+        let res = collect(&cfg, &IndexMap::new(), true, None, false);
         assert!(res.is_err());
     }
 }

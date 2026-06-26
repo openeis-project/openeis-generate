@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser};
+use indexmap::IndexMap;
 
 use crate::vcs::Vcs;
 
@@ -55,6 +56,11 @@ pub struct Cli {
     /// Define a template variable as KEY=VALUE. Repeatable.
     #[arg(long, short = 'D', value_name = "KEY=VALUE", help_heading = heading::OUTPUT_PARAMETERS)]
     pub define: Vec<String>,
+
+    /// Load template variables from a KDL file (`values { key "value" }`).
+    /// CLI --define entries take precedence over values from this file.
+    #[arg(long, value_name = "FILE", help_heading = heading::OUTPUT_PARAMETERS)]
+    pub values_file: Option<PathBuf>,
 
     /// Generate in place into the current directory (no subfolder, no VCS).
     #[arg(long, help_heading = heading::OUTPUT_PARAMETERS)]
@@ -174,11 +180,14 @@ pub fn run(cli: &Cli) -> Result<()> {
 
     let handle = prepare_source(cli, &app_cfg)?;
 
+    // --define merged with --values-file (CLI --define takes precedence).
+    let defines = merged_defines(cli)?;
+
     if cli.dry_run {
         println!("source      : {} ({:?})", handle.source_desc, handle.kind);
         println!("template dir: {}", handle.dir.display());
         print_template_config(&handle.config);
-        summarize_variables(&handle.config, &cli.define)?;
+        summarize_variables(&handle.config, &defines)?;
         return Ok(());
     }
 
@@ -197,11 +206,15 @@ pub fn run(cli: &Cli) -> Result<()> {
         cli.allow_commands,
     )?;
 
-    let defines = crate::parse_defines(&cli.define)?;
-    // Collect base + conditional placeholders (built-ins seeded from --name),
+    // Collect base + conditional placeholders (built-ins seeded from --name/--init),
     // and merge matching conditionals' include/exclude/ignore into `opts`.
-    let (mut vars, opts) =
-        crate::conditional::collect(&handle.config, &defines, cli.silent, cli.name.as_deref())?;
+    let (mut vars, opts) = crate::conditional::collect(
+        &handle.config,
+        &defines,
+        cli.silent,
+        cli.name.as_deref(),
+        cli.init,
+    )?;
 
     // pre hooks: variables are known; run in the template dir, before expand.
     // `variable::set` here overrides/adds variables that feed the expansion.
@@ -445,17 +458,29 @@ fn resolve_dest(cli: &Cli) -> Result<PathBuf> {
     anyhow::bail!("specify --name, --destination, or --init");
 }
 
+/// Merge `--define` entries with a `--values-file` into one ordered map.
+/// CLI `--define` entries take precedence over values from the file.
+fn merged_defines(cli: &Cli) -> Result<IndexMap<String, String>> {
+    let mut map = crate::parse_defines(&cli.define)?;
+    if let Some(path) = &cli.values_file {
+        let file_vals = crate::variables::load_values_file(path)?;
+        for (k, v) in file_vals {
+            map.entry(k).or_insert(v);
+        }
+    }
+    Ok(map)
+}
+
 /// Print how each placeholder would be resolved. Non-blocking: it never prompts
 /// — it only classifies each as defined / default / would-prompt (or reports a
-/// validation error against the supplied `--define` values).
-fn summarize_variables(cfg: &crate::Config, defines: &[String]) -> Result<()> {
+/// validation error against the supplied `--define` / `--values-file` values).
+fn summarize_variables(cfg: &crate::Config, defines: &IndexMap<String, String>) -> Result<()> {
     let Some(placeholders) = cfg.placeholders.as_ref() else {
         return Ok(());
     };
     if placeholders.is_empty() {
         return Ok(());
     }
-    let defines = crate::parse_defines(defines)?;
     println!("variables:");
     for (name, p) in placeholders {
         let provided = defines.get(name).map(String::as_str);
@@ -471,6 +496,12 @@ fn summarize_variables(cfg: &crate::Config, defines: &[String]) -> Result<()> {
                 println!(
                     "  {name}: would prompt (bool, default {})",
                     default.unwrap_or(false)
+                );
+            }
+            Ok(crate::variables::Resolved::PromptArray { default, .. }) => {
+                println!(
+                    "  {name}: would prompt (array, default [{}])",
+                    default.join(", ")
                 );
             }
             Err(e) => println!("  {name}: INVALID — {e}"),

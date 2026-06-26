@@ -14,6 +14,7 @@ pub mod config;
 pub mod generate;
 pub mod git;
 pub mod hooks;
+pub mod template_filters;
 pub mod variables;
 pub mod vcs;
 

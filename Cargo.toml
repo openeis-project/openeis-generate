@@ -19,6 +19,11 @@ globset = "0.1"
 heck = "0.5"
 home = "0.5"
 liquid = "0.26"
+# liquid-core/liquid-derive/pastey power the case-conversion Liquid filters
+# (see `template_filters`); same versions cargo-generate uses for this engine.
+liquid-core = "0.26"
+liquid-derive = "0.26"
+pastey = "0.2"
 regex = "1"
 rhai = "1"
 sanitize-filename = "0.6"

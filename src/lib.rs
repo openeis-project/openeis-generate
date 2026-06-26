@@ -2,7 +2,7 @@
 //!
 //! Configuration is authored in [KDL](https://kdl.dev). This crate currently
 //! ports (and streamlines) cargo-generate's config subsystem:
-//!   - [`config`]: per-template config (`openeis.kdl` inside a template)
+//!   - [`config`]: per-template config (`template.kdl` inside a template)
 //!   - [`app_config`]: user-global favorites config (`~/.config/openeis/openeis.kdl`)
 //!   - [`vcs`]: the `Vcs` enum (extracted out of cargo-generate's `args` module)
 

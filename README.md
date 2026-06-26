@@ -18,7 +18,7 @@ openeis-generate --archive https://example.com/t.zip --name my-app
 
 端到端可用。已实现：
 
-- **KDL 配置**（`openeis.kdl`）—— 模板过滤、占位符、钩子、条件配置。
+- **KDL 配置**（`template.kdl`）—— 模板过滤、占位符、钩子、条件配置。
 - **四种模板源** —— 本地 `--path`、`--git <url>`（clone）、`--archive <file|url>`
   （zip / tar.gz）、`--favorite`（来自 app 配置）。
 - **交互式变量** —— `bool` / `string` 占位符，支持默认值、choices、regex 校验；
@@ -45,18 +45,18 @@ cargo build --release
 
 ## 快速上手
 
-模板就是一个包含 `openeis.kdl` 和待渲染文件的目录。
+模板就是一个包含 `template.kdl` 和待渲染文件的目录。
 
 ```
 my-template/
-├── openeis.kdl
+├── template.kdl
 ├── README.md
 ├── Cargo.toml.liquid
 └── src/
     └── main.rs
 ```
 
-`openeis.kdl`：
+`template.kdl`：
 
 ```kdl
 template {
@@ -107,7 +107,7 @@ openeis-generate --path ./my-template --name my-app
 git ref 旗标：`--branch`、`--tag`、`--revision`（互斥）。
 `--subfolder` 选择模板的子目录。
 
-## 配置参考（`openeis.kdl`）
+## 配置参考（`template.kdl`）
 
 ### `template`
 

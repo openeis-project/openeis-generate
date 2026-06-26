@@ -40,7 +40,7 @@ use serde::Deserialize;
 use crate::vcs::Vcs;
 
 /// Name of the per-template configuration file.
-pub const CONFIG_FILE_NAME: &str = "openeis.kdl";
+pub const CONFIG_FILE_NAME: &str = "template.kdl";
 
 /// Public config. `template` is always present (defaults to empty).
 #[derive(Debug, PartialEq, Default, Clone)]
@@ -366,9 +366,9 @@ conditional {
     fn locate_configs_finds_files_and_stops_at_first_match() {
         let tmp = tmp_dir();
         create_file(&tmp, "dir1/Cargo.toml", "");
-        create_file(&tmp, "dir2/dir2_2/openeis.kdl", "");
+        create_file(&tmp, "dir2/dir2_2/template.kdl", "");
         create_file(&tmp, "dir3/Cargo.toml", "");
-        create_file(&tmp, "dir4/openeis.kdl", "");
+        create_file(&tmp, "dir4/template.kdl", "");
 
         let expected = vec![Path::new("dir2").join("dir2_2"), PathBuf::from("dir4")];
         let result = locate_template_configs(tmp.path()).expect("ok");

@@ -5,6 +5,22 @@
 //! true against the collected variables. Mirrors cargo-generate's
 //! `fill_placeholders_and_merge_conditionals` loop: collect placeholders, merge
 //! matching conditionals, and repeat while new placeholders keep appearing.
+//!
+//! The expression is a KDL string holding a rhai expression, which usually
+//! contains its own quoted literals. To avoid backslash-escaping them, write
+//! the key as a KDL **hash-string** (`#"…"#`), where inner double-quotes need
+//! no escaping — kdl 6.7.1 parses it to the same value:
+//!
+//! ```kdl
+//! conditional {
+//!     #"database != "sqlite""# {
+//!         ignore "database/**"
+//!     }
+//!     #"!("auth" in features)"# {
+//!         ignore "src/modules/auth.rs"
+//!     }
+//! }
+//! ```
 
 use anyhow::Result;
 use indexmap::IndexMap;

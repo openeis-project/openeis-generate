@@ -11,6 +11,6 @@ placeholders {
     use_ci {
         type "bool"
         prompt "Set up CI?"
-        default true
+        default #true
     }
 }

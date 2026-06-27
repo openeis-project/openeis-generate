@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# v1-fallback 是必须的：kdl 6.7.1 的 v2 解析器对裸 `true`/`false`/`null` 作参数值会解析失败，
-# 启用后 v2 失败自动回退 v1（实测即修好）。serde / span 默认已开启。
-kdl = { version = "6.7.1", features = ["span", "v1-fallback"] }
+# kdl 6.7.1 的 v2 解析器把裸 `true`/`false`/`null` 当作标识符而非布尔值，
+# 所以 KDL 里写布尔值必须用 `#true`/`#false`/`#null`（v2 语法）。无需 v1-fallback。
+kdl = { version = "6.7.1", features = ["span"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }

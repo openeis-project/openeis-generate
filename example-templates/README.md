@@ -30,9 +30,9 @@ non-interactively. `--dry-run` prints the plan without writing anything.
 
 - **The template config file is `template.kdl`** (in the template root). It is
   never copied into the output.
-- **Bare booleans go on their own line** in KDL: write
-  `default true` on its own line, not `placeholder { default true }` inline.
-  (kdl 6.7.1's v2 parser rejects a bool directly after `{`.)
+- **Booleans are `#true`/`#false`** in KDL, not bare `true`/`false`: kdl 6.7.1's
+  v2 parser treats bare `true`/`false`/`null` as identifiers. Write
+  `default #true` / `default #false` (works inline or on its own line).
 - **Lists are multi-argument nodes:** `choices "a" "b" "c"`, not repeated
   `choices` nodes.
 - **Hyphenated variables in rhai:** rhai identifiers can't contain `-`, so
@@ -47,4 +47,8 @@ non-interactively. `--dry-run` prints the plan without writing anything.
 - **Hook scripts ship unless ignored:** `.rhai` files are regular template files
   and would be copied into the output. Exclude them with
   `template { ignore "*.rhai" }`. (See `hooks-demo`.)
+- **Conditional keys with quotes:** a `conditional` key is a rhai expression,
+  which usually holds its own quoted literals. Use a KDL **hash-string**
+  `#"…"#` so the inner quotes need no escaping: `#"database != "sqlite""#`
+  instead of `"database != \"sqlite\""`. (See `feature-toggles`.)
 

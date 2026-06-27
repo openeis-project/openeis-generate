@@ -20,12 +20,22 @@
 //!
 //! ## KDL authoring gotchas (kdl 6.7.1 parser)
 //!
-//! * **Bare `true`/`false`/`null` arguments must sit on their own line.** The v2
-//!   parser rejects a bool directly after `{` on the same line, so write
-//!   `template {\n    init false\n}`, not `template { init false }`. The
-//!   multi-line form is idiomatic KDL anyway.
+//! * **Booleans are `#true`/`#false`, not bare `true`/`false`.** kdl 6.7.1's v2
+//!   parser treats bare `true`/`false`/`null` as identifiers rather than values,
+//!   so write boolean values with the `#` prefix: `default #false`, `init #true`
+//!   (works both inline and on its own line). We deliberately do NOT enable the
+//!   `v1-fallback` feature: it would accept bare bools but disables v2-only
+//!   syntax — notably hash-strings (see the next bullet).
 //! * **Lists are multi-argument nodes:** `include "a" "b"`. Repeated node names
 //!   (`include "a"` / `include "b"`) don't deserialize into `Option<Vec<_>>`.
+//! * **Conditional expressions: use a KDL hash-string to avoid escaping.** A
+//!   `conditional` key is a KDL string holding a rhai expression, which usually
+//!   contains its own quoted string literals (`database != "sqlite"`). Writing
+//!   that as an ordinary KDL string forces backslash escapes:
+//!   `"database != \"sqlite\""`. Instead use a hash-string — `#"…"#` — where
+//!   inner double-quotes need no escaping:
+//!   `#"database != "sqlite""#`. kdl 6.7.1 parses it to the identical value, so
+//!   prefer it for any conditional key that contains quotes.
 
 use std::convert::TryFrom;
 use std::io::ErrorKind;
@@ -69,7 +79,7 @@ pub struct TemplateConfig {
     pub exclude: Option<Vec<String>>,
     pub ignore: Option<Vec<String>>,
     pub vcs: Option<Vcs>,
-    /// `init false` → `Some(false)`; `init true` / `init` → `Some(true)`.
+    /// `init #false` → `Some(false)`; `init #true` / `init` → `Some(true)`.
     pub init: Option<bool>,
 }
 
@@ -255,7 +265,7 @@ template {
     include "Cargo.toml" "README.md"
     exclude "target"
     vcs "Git"
-    init false
+    init #false
 }
 placeholders {
     author {
@@ -266,7 +276,7 @@ placeholders {
     use_std {
         type "bool"
         prompt "Use std?"
-        default true
+        default #true
     }
 }
 hooks {
@@ -318,6 +328,26 @@ conditional {
     }
 
     #[test]
+    fn conditional_hash_string_key_avoids_escaping() {
+        // The KDL hash-string #"..."# lets the rhai expression keep its inner
+        // double-quotes unescaped. kdl 6.7.1 parses it to the same key the
+        // escaped form `"database != \"sqlite\""` would produce.
+        let kdl = r##"
+conditional {
+    #"database != "sqlite""# {
+        ignore "database/**"
+    }
+}
+"##;
+        let cfg = Config::try_from(kdl.to_string()).expect("parse");
+        let cond = cfg.conditional.expect("conditional");
+        let c = cond
+            .get("database != \"sqlite\"")
+            .expect("hash-string key parsed unescaped");
+        assert_eq!(c.ignore, Some(vec!["database/**".to_string()]));
+    }
+
+    #[test]
     fn try_from_handles_empty() {
         let cfg = Config::try_from(String::new()).expect("empty parses");
         assert_eq!(cfg.template, TemplateConfig::default());
@@ -328,21 +358,50 @@ conditional {
 
     #[test]
     fn init_bool_forms() {
-        // NOTE: bare bool args must be on their own line — kdl 6.7.1's v2 parser
-        // rejects `template { init false }` (bool on the same line as `{`).
-        // The multi-line form below is the idiomatic KDL style anyway.
-        let with_false =
-            Config::try_from("template {\n    init false\n}".to_string()).expect("parse");
-        assert_eq!(with_false.template.init, Some(false));
+        // Booleans are written `#true`/`#false` (kdl 6.7.1 v2 treats bare
+        // true/false as identifiers). Both inline and own-line forms parse.
+        let inline = Config::try_from("template { init #false }".to_string()).expect("parse");
+        assert_eq!(inline.template.init, Some(false));
 
-        let with_true =
-            Config::try_from("template {\n    init true\n}".to_string()).expect("parse");
-        assert_eq!(with_true.template.init, Some(true));
+        let own_line =
+            Config::try_from("template {\n    init #true\n}".to_string()).expect("parse");
+        assert_eq!(own_line.template.init, Some(true));
 
-        // `template { vcs "Git" }` (no init) must NOT trigger the default-bleeding bug.
+        // `template { vcs "Git" }` (no init) leaves init as None.
         let no_init = Config::try_from(r#"template { vcs "Git" }"#.to_string()).expect("parse");
         assert_eq!(no_init.template.init, None);
         assert_eq!(no_init.template.vcs, Some(Vcs::Git));
+    }
+
+    #[test]
+    fn bool_placeholder_and_hash_string_conditional_coexist() {
+        // Regression: with bare bools we needed v1-fallback, which then rejected
+        // hash-strings. Now bools use #false (pure v2) so a hash-string
+        // conditional key works in the SAME document as a bool placeholder.
+        let kdl = r##"
+placeholders {
+    spa {
+        type "bool"
+        prompt "spa?"
+        default #false
+    }
+}
+conditional {
+    #"database != "sqlite""# {
+        ignore "database/**"
+    }
+}
+"##;
+        let cfg = Config::try_from(kdl.to_string()).expect("parse");
+        let spa = cfg.placeholders.as_ref().unwrap().get("spa").unwrap();
+        assert_eq!(spa.default.as_ref().unwrap(), &serde_json::json!(false));
+        let key = cfg
+            .conditional
+            .as_ref()
+            .unwrap()
+            .get("database != \"sqlite\"")
+            .expect("hash-string key");
+        assert_eq!(key.ignore, Some(vec!["database/**".to_string()]));
     }
 
     #[test]

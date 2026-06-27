@@ -11,6 +11,6 @@ placeholders {
     use_clap {
         type "bool"
         prompt "Use clap for argument parsing?"
-        default true
+        default #true
     }
 }

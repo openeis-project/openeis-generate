@@ -13,16 +13,20 @@ placeholders {
 // when true, merge their `include`/`exclude`/`ignore`/`placeholders`. Here each
 // module's file is dropped unless the user selected it.
 //
+// The key is a KDL **hash-string** (`#"…"#`) so the rhai expression's inner
+// double-quotes need no escaping (kdl 6.7.1 parses it to the same value as the
+// escaped `"!(\"auth\" in features)"` form).
+//
 // NOTE: the expression uses `in` on the `features` string. Rhai identifiers
 // can't contain `-`, so this only works for non-hyphenated variable names.
 conditional {
-    "!(\"auth\" in features)" {
+    #"!("auth" in features)"# {
         ignore "src/modules/auth.rs"
     }
-    "!(\"logging\" in features)" {
+    #"!("logging" in features)"# {
         ignore "src/modules/logging.rs"
     }
-    "!(\"graphql\" in features)" {
+    #"!("graphql" in features)"# {
         ignore "src/modules/graphql.rs"
     }
 }

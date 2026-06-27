@@ -115,7 +115,7 @@ favorites {
         git "https://example.com/t.git"
         branch "main"
         vcs "Git"
-        init true
+        init #true
     }
 }
 "#;

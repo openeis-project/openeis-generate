@@ -191,8 +191,12 @@ pub fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    // Resolve the project name (prompt if --name was omitted), then the
+    // destination from it. Done after the dry-run branch so --dry-run stays
+    // non-interactive and name-optional.
+    let name = resolve_project_name(cli)?;
     // Resolve destination early so hooks (env::destination) can see it.
-    let dest = resolve_dest(cli)?;
+    let dest = resolve_dest(cli, &name)?;
 
     // init hooks: run in the template dir, before variable collection.
     let mut init_vars = crate::Variables::default();
@@ -206,13 +210,13 @@ pub fn run(cli: &Cli) -> Result<()> {
         cli.allow_commands,
     )?;
 
-    // Collect base + conditional placeholders (built-ins seeded from --name/--init),
+    // Collect base + conditional placeholders (built-ins seeded from the name),
     // and merge matching conditionals' include/exclude/ignore into `opts`.
     let (mut vars, opts) = crate::conditional::collect(
         &handle.config,
         &defines,
         cli.silent,
-        cli.name.as_deref(),
+        Some(name.as_str()),
         cli.init,
     )?;
 
@@ -445,17 +449,33 @@ fn load_config_at(dir: &Path) -> Result<crate::Config> {
     }
 }
 
-fn resolve_dest(cli: &Cli) -> Result<PathBuf> {
+fn resolve_dest(cli: &Cli, name: &str) -> Result<PathBuf> {
     if cli.init {
         return Ok(PathBuf::from("."));
     }
     if let Some(d) = &cli.destination {
         return Ok(d.clone());
     }
-    if let Some(name) = &cli.name {
-        return Ok(PathBuf::from(name));
+    Ok(PathBuf::from(name))
+}
+
+/// Resolve the project name: an explicit `--name` wins; otherwise prompt for it
+/// interactively. `--silent` carries `requires = "name"` (see [`Cli::silent`]),
+/// so this only reaches the prompt in interactive runs — it never blocks silent
+/// mode. Returns the trimmed name (also seeds the `project-name`/`crate_name`
+/// built-ins).
+fn resolve_project_name(cli: &Cli) -> Result<String> {
+    if let Some(n) = &cli.name {
+        return Ok(n.clone());
     }
-    anyhow::bail!("specify --name, --destination, or --init");
+    use dialoguer::Input;
+    let name: String = Input::new()
+        .with_prompt("Project name")
+        .validate_with(|s: &String| {
+            (!s.trim().is_empty()).then_some(()).ok_or("name cannot be empty")
+        })
+        .interact_text()?;
+    Ok(name.trim().to_string())
 }
 
 /// Merge `--define` entries with a `--values-file` into one ordered map.

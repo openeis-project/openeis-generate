@@ -1,0 +1,16 @@
+template {
+    vcs "None"
+}
+
+placeholders {
+    description {
+        type "string"
+        prompt "Short description?"
+        default "A shiny new project"
+    }
+    use_ci {
+        type "bool"
+        prompt "Set up CI?"
+        default true
+    }
+}

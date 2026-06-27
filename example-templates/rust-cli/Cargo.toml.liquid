@@ -1,0 +1,10 @@
+[package]
+name = "{{ crate_name }}"
+version = "0.1.0"
+edition = "2021"
+authors = ["{{ authors }}"]
+description = "{{ description }}"
+
+[dependencies]
+{% if use_clap == "true" %}clap = { version = "4", features = ["derive"] }
+{% endif %}

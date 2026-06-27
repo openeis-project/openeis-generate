@@ -1,0 +1,16 @@
+template {
+    vcs "Git"
+}
+
+placeholders {
+    description {
+        type "string"
+        prompt "One-line description?"
+        default "A command-line tool"
+    }
+    use_clap {
+        type "bool"
+        prompt "Use clap for argument parsing?"
+        default true
+    }
+}

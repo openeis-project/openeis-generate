@@ -1,0 +1,19 @@
+{% if use_clap == "true" %}use clap::Parser;
+
+/// {{ description }}
+#[derive(Parser, Debug)]
+#[command(name = "{{ crate_name }}", version, about)]
+struct Cli {
+    /// Who to greet.
+    name: Option<String>,
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let who = cli.name.unwrap_or_else(|| "world".to_string());
+    println!("Hello, {}! (from {{ project-name }})", who);
+}
+{% else %}fn main() {
+    println!("Hello from {{ project-name }}!");
+}
+{% endif %}

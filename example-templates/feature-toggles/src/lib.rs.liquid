@@ -1,0 +1,6 @@
+//! Selected features: {{ features }}
+
+{% if features contains "auth" %}pub mod auth;
+{% endif %}{% if features contains "logging" %}pub mod logging;
+{% endif %}{% if features contains "graphql" %}pub mod graphql;
+{% endif %}

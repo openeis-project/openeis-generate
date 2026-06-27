@@ -1,0 +1,22 @@
+// rhai hooks. `pre` runs after variables are collected and its `variable::set`
+// calls flow into the rendering; `post` runs in the destination dir after
+// expansion. Scripts resolve relative to the template root.
+//
+// The `.rhai` scripts are template machinery, not part of the generated
+// project, so they are excluded from the output via `template { ignore }`.
+template {
+    ignore "*.rhai"
+}
+
+placeholders {
+    subject {
+        type "string"
+        prompt "Who should we greet?"
+        default "world"
+    }
+}
+
+hooks {
+    pre "pre.rhai"
+    post "post.rhai"
+}

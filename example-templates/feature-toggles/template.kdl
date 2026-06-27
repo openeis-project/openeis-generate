@@ -1,0 +1,28 @@
+// An `array` placeholder (multi-select). Its value reaches templates as a
+// comma-joined string, e.g. `"auth,logging"`.
+placeholders {
+    features {
+        type "array"
+        prompt "Which modules should the project include?"
+        choices "auth" "logging" "graphql"
+        default "auth" "logging"
+    }
+}
+
+// `conditional` blocks evaluate a rhai expression against the variables and,
+// when true, merge their `include`/`exclude`/`ignore`/`placeholders`. Here each
+// module's file is dropped unless the user selected it.
+//
+// NOTE: the expression uses `in` on the `features` string. Rhai identifiers
+// can't contain `-`, so this only works for non-hyphenated variable names.
+conditional {
+    "!(\"auth\" in features)" {
+        ignore "src/modules/auth.rs"
+    }
+    "!(\"logging\" in features)" {
+        ignore "src/modules/logging.rs"
+    }
+    "!(\"graphql\" in features)" {
+        ignore "src/modules/graphql.rs"
+    }
+}

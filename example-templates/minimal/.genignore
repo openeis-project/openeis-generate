@@ -1,0 +1,3 @@
+# Local-only files — never ship these in a generated project.
+*.env
+secrets/

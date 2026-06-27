@@ -1,0 +1,2 @@
+Hello from {{ project-name }}!
+Rendered shouty: {{ name | shouty_snake_case }}

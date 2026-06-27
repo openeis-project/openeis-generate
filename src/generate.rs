@@ -115,15 +115,25 @@ pub fn expand(
         }
 
         if entry.file_type().is_file() {
-            // include whitelist (empty = allow all), then exclude/ignore.
-            if !passes_filters(&rel_str, &include, &exclude, &ignore) {
-                continue;
+            // ignore → drop; include whitelist (empty = allow all); exclude →
+            // copy verbatim without rendering (cargo-generate semantics).
+            match classify(&rel_str, &include, &exclude, &ignore) {
+                FilterAction::Skip => continue,
+                FilterAction::CopyRaw => {
+                    let dest = dest_dir.join(render_relpath(rel, &parser, &object)?);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    copy_or_render(entry.path(), &dest, &parser, &object, true, &mut stats)?;
+                }
+                FilterAction::CopyRender => {
+                    let dest = dest_dir.join(render_relpath(rel, &parser, &object)?);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    copy_or_render(entry.path(), &dest, &parser, &object, false, &mut stats)?;
+                }
             }
-            let dest = dest_dir.join(render_relpath(rel, &parser, &object)?);
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            copy_or_render(entry.path(), &dest, &parser, &object, &mut stats)?;
         }
     }
 
@@ -184,9 +194,19 @@ fn copy_or_render(
     dest: &Path,
     parser: &Parser,
     object: &Object,
+    raw: bool,
     stats: &mut GenerationStats,
 ) -> Result<()> {
     let bytes = std::fs::read(src)?;
+    // `raw` (an `exclude` match, like cargo-generate) copies the file verbatim
+    // with NO Liquid rendering — for files that contain non-Liquid templating
+    // (e.g. a Tera-based cliff.toml) or must be shipped byte-for-byte.
+    if raw {
+        std::fs::write(dest, &bytes)
+            .with_context(|| format!("copying {}", dest.display()))?;
+        stats.files_copied += 1;
+        return Ok(());
+    }
     match String::from_utf8(bytes) {
         Ok(text) => {
             let rendered = render_graceful(&text, parser, object);
@@ -229,9 +249,31 @@ fn load_genignore(template_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-fn passes_filters(rel: &str, include: &GlobSet, exclude: &GlobSet, ignore: &GlobSet) -> bool {
-    let included = include.is_empty() || include.is_match(rel);
-    included && !exclude.is_match(rel) && !ignore.is_match(rel)
+/// Per-file decision from the include/exclude/ignore filters.
+enum FilterAction {
+    /// Drop the file entirely (`ignore`, or outside the `include` whitelist).
+    Skip,
+    /// Copy verbatim, skipping Liquid (`exclude` — cargo-generate semantics).
+    CopyRaw,
+    /// Render Liquid in content.
+    CopyRender,
+}
+
+/// `ignore` drops; `include` (when non-empty) is a whitelist; `exclude` copies
+/// the file raw without rendering (so files with non-Liquid templating survive
+/// untouched). `include` wins over `exclude`/`ignore` is false here — a file
+/// must first pass the include whitelist, then exclude/ignore apply.
+fn classify(rel: &str, include: &GlobSet, exclude: &GlobSet, ignore: &GlobSet) -> FilterAction {
+    if !include.is_empty() && !include.is_match(rel) {
+        return FilterAction::Skip;
+    }
+    if ignore.is_match(rel) {
+        return FilterAction::Skip;
+    }
+    if exclude.is_match(rel) {
+        return FilterAction::CopyRaw;
+    }
+    FilterAction::CopyRender
 }
 
 /// True if a directory itself should be pruned (never descend into it).
@@ -338,24 +380,38 @@ mod tests {
     fn include_exclude_ignore_filters() {
         let src = TempDir::new().unwrap();
         let dst = TempDir::new().unwrap();
-        write(src.path(), "keep.txt", "");
-        write(src.path(), "drop.txt", "");
+        // `keep` is rendered; `raw` is excluded (copied verbatim, NOT rendered);
+        // `secret.key` is ignored (dropped).
+        write(src.path(), "keep.txt", "hi {{ name }}");
+        write(src.path(), "raw.txt", "hi {{ name }}");
         write(src.path(), "secret.key", "");
-        write(src.path(), "nested/keep.txt", "");
-        write(src.path(), "nested/drop.txt", "");
+        write(src.path(), "nested/keep.txt", "{{ name }}");
+        write(src.path(), "nested/raw.txt", "{{ name }}");
 
         let opts = GenerationOptions {
-            exclude: vec!["**/drop.txt".into()],
+            exclude: vec!["**/raw.txt".into()],
             ignore: vec!["*.key".into()],
             include: vec![],
         };
-        expand(src.path(), dst.path(), &Variables::default(), &opts).unwrap();
+        let stats = expand(
+            src.path(),
+            dst.path(),
+            &vars(&[("name", "app")]),
+            &opts,
+        )
+        .unwrap();
 
-        assert!(dst.path().join("keep.txt").exists());
-        assert!(dst.path().join("nested/keep.txt").exists());
-        assert!(!dst.path().join("drop.txt").exists());
-        assert!(!dst.path().join("nested/drop.txt").exists());
+        // keep.txt is rendered.
+        assert_eq!(fs::read_to_string(dst.path().join("keep.txt")).unwrap(), "hi app");
+        assert_eq!(fs::read_to_string(dst.path().join("nested/keep.txt")).unwrap(), "app");
+        // raw.txt is excluded → present but copied VERBATIM (liquid untouched).
+        assert_eq!(fs::read_to_string(dst.path().join("raw.txt")).unwrap(), "hi {{ name }}");
+        assert_eq!(fs::read_to_string(dst.path().join("nested/raw.txt")).unwrap(), "{{ name }}");
+        // ignored → absent.
         assert!(!dst.path().join("secret.key").exists());
+        // exclude counts as a copy, not a render.
+        assert_eq!(stats.files_copied, 2);
+        assert_eq!(stats.files_rendered, 2);
     }
 
     #[test]

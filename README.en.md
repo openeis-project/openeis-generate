@@ -11,9 +11,12 @@ KDL and streamlined.
 # generate from a local template, interactively
 openeis-generate --path ./my-template --name my-app
 
-# or from a git repo / zip / tar.gz / URL
+# or from a git repo / archive (zip / tar.gz / tar.zst) / URL
 openeis-generate --git https://example.com/t.git --name my-app
 openeis-generate --archive https://example.com/t.zip --name my-app
+
+# package a template into a single distributable archive
+openeis-generate package ./my-template -o dist.tar.zst
 ```
 
 ## Status
@@ -22,7 +25,10 @@ Working end-to-end. Implemented:
 
 - **KDL config** (`openeis.kdl`) — template filters, placeholders, hooks, conditionals.
 - **Four template sources** — local `--path`, `--git <url>` (clone), `--archive <file|url>`
-  (zip / tar.gz), and `--favorite` (from app config).
+  (zip / tar.gz / tar.zst), and `--favorite` (from app config).
+- **Packaging** — the `package` subcommand bundles a template directory into a
+  `zip` / `tar.gz` / `tar.zst` archive (keeps `template.kdl` raw, skips `.git`, honors
+  `.genignore`), for distribution and as a `publish` precursor.
 - **Interactive variables** — `bool` / `string` placeholders with defaults, choices,
   regex validation; `--define key=value` and `--silent` supported.
 - **Liquid rendering** — `{{ var }}` in file names and contents; `.liquid` suffix
@@ -105,12 +111,43 @@ All mutually exclusive (pass exactly one):
 |------|--------|
 | `--path <dir>` | Local directory |
 | `--git <url>` | Clone a git repo (URL, or `owner/repo`) |
-| `--archive <file\|url>` | Extract a local `.zip`/`.tar.gz`/`.tgz`, or download one over HTTP(S) |
+| `--archive <file\|url>` | Extract a local `.zip`/`.tar.gz`/`.tgz`/`.tar.zst`/`.tzst`, or download one over HTTP(S) |
 | `--favorite <name>` | A favorite defined in the app config |
 | _(positional)_ | A favorite name (when no `--git`/`--path`/`--archive`) |
 
 Git ref flags: `--branch`, `--tag`, `--revision` (mutually exclusive).
 `--subfolder` selects a subdirectory of the template.
+
+## Packaging (`package` subcommand)
+
+Bundle a template directory into a distributable archive (`.tar.zst` by default).
+Packaging is **raw** — no Liquid rendering, `template.kdl` is kept; the `include`/`exclude`/
+`ignore` filters from `template.kdl` are *generation-time* concerns and are **not** applied.
+Fixed behavior:
+
+- `.git` is always excluded;
+- a template-root `.genignore` (one glob per line, `#` comments / blank lines skipped) is read
+  and matched files are dropped — including a matched directory (it isn't descended into), so
+  secrets can be kept out of a published package;
+- the `.genignore` file itself stays in the archive.
+
+```sh
+openeis-generate package ./my-template                  # → my-template.tar.zst
+openeis-generate package ./my-template -o dist.zip       # format inferred from extension
+openeis-generate package --format tar-gz ./tpl -o dist.tgz
+openeis-generate package ./tpl --level 19                # compression level (zstd 1–22 / gzip 0–9)
+```
+
+| Flag | Description |
+|------|-------------|
+| _(positional)_ | Template directory to package (defaults to the current directory) |
+| `-o, --output <file>` | Output archive path; its extension selects the format |
+| `--format <fmt>` | Force a format: `zip` / `tar-gz`(`tgz`) / `tar-zst`(`tzst`) |
+| `--level <n>` | Compression level; ignored for zip |
+| `-f, --force` | Overwrite an existing output file |
+
+The produced archive can be fed straight back through `--archive`
+(`openeis-generate --archive dist.tar.zst …`) to verify the distribution round-trip.
 
 ## Configuration reference (`openeis.kdl`)
 
@@ -229,6 +266,7 @@ hooks, and conditionals. (`author`, `os-arch`, `crate_name`, `crate_type`,
 
 ```
 openeis-generate [OPTIONS] [AUTO_PATH]
+openeis-generate package [OPTIONS] [PATH]      # bundle a template into an archive (see above)
 
 Template Selection:
   --git <GIT>              --path <PATH>              --archive <file|url>

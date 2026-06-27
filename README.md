@@ -9,9 +9,12 @@
 # 从本地模板生成（交互式）
 openeis-generate --path ./my-template --name my-app
 
-# 或从 git 仓库 / zip / tar.gz / URL 生成
+# 或从 git 仓库 / 归档（zip / tar.gz / tar.zst）/ URL 生成
 openeis-generate --git https://example.com/t.git --name my-app
 openeis-generate --archive https://example.com/t.zip --name my-app
+
+# 把模板打包成单个归档文件用于分发
+openeis-generate package ./my-template -o dist.tar.zst
 ```
 
 ## 现状
@@ -20,7 +23,9 @@ openeis-generate --archive https://example.com/t.zip --name my-app
 
 - **KDL 配置**（`template.kdl`）—— 模板过滤、占位符、钩子、条件配置。
 - **四种模板源** —— 本地 `--path`、`--git <url>`（clone）、`--archive <file|url>`
-  （zip / tar.gz）、`--favorite`（来自 app 配置）。
+  （zip / tar.gz / tar.zst）、`--favorite`（来自 app 配置）。
+- **打包分发** —— `package` 子命令把模板目录打成 `zip` / `tar.gz` / `tar.zst`
+  归档（原样保留 `template.kdl`、跳过 `.git`、遵守 `.genignore`），为分发与 `publish` 做准备。
 - **交互式变量** —— `bool` / `string` 占位符，支持默认值、choices、regex 校验；
   支持 `--define key=value` 与 `--silent`。
 - **Liquid 渲染** —— 文件名与内容里的 `{{ var }}`；`.liquid` 后缀约定；
@@ -100,12 +105,41 @@ openeis-generate --path ./my-template --name my-app
 |------|------|
 | `--path <dir>` | 本地目录 |
 | `--git <url>` | clone 一个 git 仓库（URL，或 `owner/repo`） |
-| `--archive <file\|url>` | 解压本地 `.zip`/`.tar.gz`/`.tgz`，或经 HTTP(S) 下载后解压 |
+| `--archive <file\|url>` | 解压本地 `.zip`/`.tar.gz`/`.tgz`/`.tar.zst`/`.tzst`，或经 HTTP(S) 下载后解压 |
 | `--favorite <name>` | app 配置里定义的收藏 |
 | _（位置参数）_ | 收藏名（未给 `--git`/`--path`/`--archive` 时） |
 
 git ref 旗标：`--branch`、`--tag`、`--revision`（互斥）。
 `--subfolder` 选择模板的子目录。
+
+## 打包（`package` 子命令）
+
+把模板目录打成一个可分发的归档（默认 `.tar.zst`）。打包是**原样**的——不渲染 Liquid，
+保留 `template.kdl`；`include`/`exclude`/`ignore` 等 `template.kdl` 过滤规则是 **生成时**
+才用的，打包时一律不应用。打包固定行为：
+
+- 总是排除 `.git`；
+- 读取模板根目录的 `.genignore`（每行一个 glob，`#` 注释/空行跳过），按其丢弃文件——
+  连同匹配的目录一起跳过（不进入），便于发布前剔除密钥等本地文件；
+- `.genignore` 文件本身会保留在归档里。
+
+```sh
+openeis-generate package ./my-template                  # → my-template.tar.zst
+openeis-generate package ./my-template -o dist.zip       # 由扩展名推断格式
+openeis-generate package --format tar-gz ./tpl -o dist.tgz
+openeis-generate package ./tpl --level 19                # 压缩级别（zstd 1–22 / gzip 0–9）
+```
+
+| 旗标 | 说明 |
+|------|------|
+| _（位置参数）_ | 待打包的模板目录（默认当前目录） |
+| `-o, --output <file>` | 输出归档路径；扩展名决定格式 |
+| `--format <fmt>` | 强制格式：`zip` / `tar-gz`(`tgz`) / `tar-zst`(`tzst`) |
+| `--level <n>` | 压缩级别；zip 忽略 |
+| `-f, --force` | 覆盖已存在的输出文件 |
+
+打出来的归档可直接用 `--archive` 喂回生成器（`openeis-generate --archive dist.tar.zst …`），
+验证分发链路。
 
 ## 配置参考（`template.kdl`）
 
@@ -222,6 +256,7 @@ variable::set("struct_name", to_upper_camel_case(display_name));
 
 ```
 openeis-generate [OPTIONS] [AUTO_PATH]
+openeis-generate package [OPTIONS] [PATH]      # 打包模板为归档（见上文）
 
 Template Selection:
   --git <GIT>              --path <PATH>              --archive <file|url>

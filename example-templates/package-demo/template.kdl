@@ -1,0 +1,11 @@
+template {
+    vcs "None"
+}
+
+placeholders {
+    description {
+        type "string"
+        prompt "Short description?"
+        default "A demo template meant to be packaged"
+    }
+}

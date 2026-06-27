@@ -25,6 +25,28 @@ non-interactively. `--dry-run` prints the plan without writing anything.
 | [`rust-cli`](rust-cli) | a practical Cargo binary scaffold (`crate_name`, `authors`), Liquid `{% if %}` control flow, `vcs Git` |
 | [`feature-toggles`](feature-toggles) | `array` placeholder (multi-select) + `conditional` blocks + Liquid `contains` |
 | [`hooks-demo`](hooks-demo) | rhai `pre`/`post` hooks: `variable::set` feeding rendering, the `file`/`env` modules, case functions |
+| [`package-demo`](package-demo) | a template meant to be **packaged**: nested dirs, a `.genignore` keeping `*.env`/`*.log` secrets out of the archive |
+
+## Packaging
+
+The `package` subcommand bundles a template into a distributable archive (default
+`.tar.zst`); the [`package-demo`](package-demo) template exists to exercise it. Run the
+end-to-end check (packages → all three formats, asserts the `.genignore` secrets are
+dropped while `template.kdl` is kept, then round-trips the `.tar.zst` back through
+`--archive` and confirms the project renders):
+
+```sh
+bash example-templates/verify-package.sh
+```
+
+Or by hand:
+
+```sh
+cargo build
+./target/debug/openeis-generate package example-templates/package-demo -o /tmp/demo.tar.zst
+./target/debug/openeis-generate --archive /tmp/demo.tar.zst --name demo-proj --silent --destination /tmp/out
+```
+
 
 ## Gotchas worth knowing
 

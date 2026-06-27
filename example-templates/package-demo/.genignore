@@ -1,0 +1,5 @@
+# Local-only files — kept out of the distributed package.
+# `package` drops these; `generate` drops them too (genignore applies at both
+# stages). The .genignore file itself is kept in the archive.
+*.env
+*.log

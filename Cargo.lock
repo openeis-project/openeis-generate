@@ -991,6 +991,7 @@ dependencies = [
  "ureq",
  "walkdir",
  "zip",
+ "zstd",
 ]
 
 [[package]]

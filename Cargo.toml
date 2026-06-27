@@ -33,3 +33,6 @@ thiserror = "2"
 ureq = "2"
 walkdir = "2"
 zip = "2"
+# zstd for `.tar.zst` encode (package) and decode (--archive). zstd-sys is
+# already compiled transitively via `zip`, so this adds no new native build.
+zstd = "0.13"

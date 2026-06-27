@@ -14,12 +14,14 @@ pub mod config;
 pub mod generate;
 pub mod git;
 pub mod hooks;
+pub mod package;
 pub mod template_filters;
 pub mod variables;
 pub mod vcs;
 
 pub use app_config::{app_config_path, AppConfig, DefaultsConfig, FavoriteConfig};
-pub use cli::{Cli, TemplateSource, TemplateSourceKind};
+pub use archive::{pack, detect as detect_format, Format, PackStats};
+pub use cli::{Cli, Command, PackageArgs, TemplateSource, TemplateSourceKind};
 pub use config::{
     Config, ConditionalConfig, HookPhase, HooksConfig, Placeholder, TemplateConfig,
     CONFIG_FILE_NAME,

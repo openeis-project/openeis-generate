@@ -8,9 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser};
+use clap::{Args, Parser, Subcommand};
 use indexmap::IndexMap;
 
+use crate::archive::Format;
 use crate::vcs::Vcs;
 
 /// Help-heading groups, to keep `--help` organized like cargo-generate's.
@@ -32,6 +33,10 @@ mod heading {
 pub struct Cli {
     #[command(flatten)]
     pub template: TemplateSource,
+
+    /// Subcommand (`package`). When `None`, the flat generate flags below run.
+    #[command(subcommand)]
+    pub command: Option<Command>,
 
     /// List favorite templates defined in the app config, then exit.
     #[arg(long, group = "ModeSelector")]
@@ -169,9 +174,50 @@ pub enum TemplateSourceKind {
     Favorite,
 }
 
+/// Top-level subcommands. The default (no subcommand) is the `generate` flow
+/// driven by the flat flags on [`Cli`]; `package` bundles a template into a
+/// distributable archive.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Package a template directory into a distributable archive
+    /// (zip / tar.gz / tar.zst) — for sharing and as a `publish` precursor.
+    Package(PackageArgs),
+}
+
+/// Arguments for `openeis-generate package`.
+#[derive(Args, Debug, Clone)]
+pub struct PackageArgs {
+    /// Template directory to package (must contain `template.kdl`). Defaults to
+    /// the current directory.
+    pub path: Option<PathBuf>,
+
+    /// Output archive. The format is auto-detected from the extension
+    /// (`.zip` / `.tar.gz` / `.tgz` / `.tar.zst` / `.tzst`); pass `--format` to
+    /// force it. Defaults to `<dir-name>.tar.zst`.
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Force a format, ignoring the `--output` extension (zip / tar-gz / tar-zst).
+    #[arg(long, value_enum)]
+    pub format: Option<Format>,
+
+    /// Compression level. zstd 1–22 (default 3), gzip 0–9 (default 6); ignored
+    /// for zip.
+    #[arg(long)]
+    pub level: Option<i32>,
+
+    /// Overwrite an existing output file.
+    #[arg(short = 'f', long)]
+    pub force: bool,
+}
+
 /// Entry point used by `main`. Resolves the template source (cloning for git
 /// sources), collects variables, and expands the template into the destination.
 pub fn run(cli: &Cli) -> Result<()> {
+    if let Some(Command::Package(args)) = &cli.command {
+        return crate::package::run(args);
+    }
+
     let app_cfg = load_app_config(&cli.config)?;
 
     if cli.list_favorites {

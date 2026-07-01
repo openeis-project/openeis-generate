@@ -64,6 +64,40 @@ pub fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
+/// What kind of publishable artifact a `.tar.zst` bundle is, sniffed from its
+/// root manifest (`template.kdl` → template, `skills.kdl` → skill bundle,
+/// `plugin.kdl` → plugin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactKind {
+    Template,
+    Skill,
+    Plugin,
+}
+
+/// Sniff a `.tar.zst`'s root manifest to classify it. Returns `None` if no
+/// recognized root manifest is present or the bytes aren't a decodable
+/// `.tar.zst`. Used by `openeis publish` to route to `/publish/template` vs
+/// `/publish/skill` vs `/publish/plugin`.
+pub fn detect_kind(bytes: &[u8]) -> Option<ArtifactKind> {
+    let decoder = zstd::Decoder::new(io::Cursor::new(bytes)).ok()?;
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries().ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().ok()?.to_owned();
+        let rel = path.strip_prefix("./").unwrap_or(&path);
+        if rel == Path::new("skills.kdl") {
+            return Some(ArtifactKind::Skill);
+        }
+        if rel == Path::new("template.kdl") {
+            return Some(ArtifactKind::Template);
+        }
+        if rel == Path::new("plugin.kdl") {
+            return Some(ArtifactKind::Plugin);
+        }
+    }
+    None
+}
+
 /// Download `url` into `dest` (follows redirects).
 pub fn download(url: &str, dest: &Path) -> Result<()> {
     let resp = ureq::get(url)
@@ -275,6 +309,50 @@ fn pack_tarzst(
     let enc = zstd::stream::write::Encoder::new(file, level)?;
     let mut tar = tar::Builder::new(enc);
     append_tar(&mut tar, src_dir, entries)?;
+    tar.finish()?;
+    let enc = tar.into_inner()?;
+    enc.finish()?;
+    Ok(())
+}
+
+/// Pack an in-memory list of `(archive_path, contents)` entries into `out`
+/// using the given `format` (files written at the archive root — no top-level
+/// dir). Used by `openeis publish` to build plugin artifacts (a root
+/// `plugin.kdl` manifest + the compiled binary). Mirrors the root-flat layout
+/// produced by the template `pack` path.
+///
+/// Only `Format::TarZst` is supported (the format `publish` ships); `TarGz`
+/// and `Zip` return an error. Entries whose path is absolute or contains a `..`
+/// component are skipped (zip-slip / path-traversal guard).
+pub fn pack_files(entries: &[(String, Vec<u8>)], out: &Path, format: Format) -> Result<()> {
+    if format != Format::TarZst {
+        anyhow::bail!(
+            "pack_files only supports tar.zst, got {:?}",
+            format
+        );
+    }
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(out).with_context(|| format!("creating {}", out.display()))?;
+
+    let enc = zstd::stream::write::Encoder::new(file, 3)?;
+    let mut tar = tar::Builder::new(enc);
+    for (name, data) in entries {
+        // Security: refuse absolute or parent-escaping paths.
+        let safe = Path::new(name)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+        if !safe {
+            continue;
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, name, io::Cursor::new(data))
+            .with_context(|| format!("adding {name} to tar"))?;
+    }
     tar.finish()?;
     let enc = tar.into_inner()?;
     enc.finish()?;
@@ -597,5 +675,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("not a directory"));
+    }
+
+    #[test]
+    fn pack_files_round_trip() {
+        let entries: Vec<(String, Vec<u8>)> = vec![
+            ("plugin.kdl".to_string(), b"plugin { name \"x\" }".to_vec()),
+            ("my-plugin".to_string(), b"\x7fELF binary bytes".to_vec()),
+        ];
+
+        let arc = TempDir::new().unwrap();
+        let out_path = arc.path().join("plugin.tar.zst");
+        pack_files(&entries, &out_path, Format::TarZst).unwrap();
+
+        // Read it back: zstd-decode + tar-walk, asserting both entries.
+        let bytes = fs::read(&out_path).unwrap();
+        let decoder = zstd::Decoder::new(io::Cursor::new(&bytes)).unwrap();
+        let mut tar = tar::Archive::new(decoder);
+        let mut got: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        for mut entry in tar.entries().unwrap().flatten() {
+            let path = entry.path().unwrap().to_owned();
+            let rel = path.strip_prefix("./").unwrap_or(&path).to_path_buf();
+            let name = rel.to_string_lossy().replace('\\', "/");
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            got.insert(name, buf);
+        }
+        assert_eq!(got.get("plugin.kdl").map(Vec::as_slice), Some(&b"plugin { name \"x\" }"[..]));
+        assert_eq!(got.get("my-plugin").map(Vec::as_slice), Some(&b"\x7fELF binary bytes"[..]));
     }
 }

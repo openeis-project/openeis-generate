@@ -36,7 +36,7 @@ openeis-generate package ./my-template -o dist.tar.zst
   `file` 模块、`env` 模块、大小写转换函数，以及可选的 `system` 模块。
 - **条件配置** —— 当 rhai 表达式对已收集变量求值为真时，合并额外的占位符/过滤规则。
 
-52 个单元测试，clippy 零警告。
+77 个单元测试，clippy 零警告。
 
 ## 构建
 
@@ -68,7 +68,7 @@ template {
     include "README.md" "Cargo.toml.liquid" "src/*"
     exclude "src/unused.rs"
     vcs "Git"
-    init false
+    init #false
 }
 
 placeholders {
@@ -85,7 +85,7 @@ placeholders {
     use_ci {
         type "bool"
         prompt "配置 CI？"
-        default true
+        default #true
     }
 }
 ```
@@ -152,7 +152,7 @@ template {
     exclude "target"              # 排除
     ignore "*.key"                # 额外忽略
     vcs "Git"                     # "Git" | "None"（默认 None）
-    init false                    # 布尔
+    init #false                   # 布尔（写 #true/#false，非裸 true/false）
 }
 ```
 
@@ -176,7 +176,7 @@ placeholders {
     use_ci {
         type "bool"
         prompt "CI？"
-        default true
+        default #true
     }
     semver_tag {
         type "string"
@@ -249,8 +249,8 @@ variable::set("struct_name", to_upper_camel_case(display_name));
 ## 内置变量
 
 `name` 与 `project-name` 由 `--name` 注入，可在模板、钩子、条件中使用。
-（`author`、`os-arch`、`crate_name`、`crate_type`、`within_cargo_project`、
-`is_init` 为保留名，不能用作占位符。）
+（`authors`、`username`、`os-arch`、`project-name`、`crate_name`、`crate_type`、
+`within_cargo_project`、`is_init` 为保留名，不能用作占位符。）
 
 ## CLI 参考
 
@@ -290,7 +290,7 @@ favorites {
         git "https://example.com/t.git"
         branch "main"
         vcs "Git"
-        init true
+        init #true
     }
 }
 ```
@@ -300,21 +300,20 @@ favorites {
 
 ## KDL 写法注意
 
-`kdl` 6.7.1 的解析器有几个坑 —— 用惯用写法都能避开：
+`kdl` 6.7.1 的 v2 解析器有几个坑 —— 用惯用写法都能避开：
 
-- **裸 `true`/`false`/`null` 参数要独占一行** ——
-  `template { init false }`（单行）会解析失败；写成
-  ```
-  template {
-      init false
-  }
-  ```
+- **布尔值写 `#true`/`#false`，不要写裸 `true`/`false`** —— v2 解析器把裸
+  `true`/`false`/`null` 当作标识符而非值，因此 `init false`、`default true` 会
+  解析失败；写成 `init #false`、`default #true`（单行或独占行均可）。项目故意
+  不启用 `v1-fallback`（它虽能接受裸 bool，却会禁用下文的 hash-string）。
 - **列表用多参数节点** —— `include "a" "b"`，而不是写两行 `include "a"`。
-- 含特殊字符的字符串（条件键）要加引号转义：`"lang == \"rust\""`。
+- **含引号的条件键用 KDL hash-string `#"…"#`** —— 条件键是 rhai 表达式，常含自身
+  的引号字面量；用 `#"database != "sqlite""#` 而非转义形式 `"database != \"sqlite\""`，
+  内层引号无需转义。
 
 ## 测试
 
 ```sh
-cargo test          # 52 个测试
+cargo test          # 77 个测试
 cargo clippy --all-targets
 ```

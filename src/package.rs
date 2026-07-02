@@ -29,10 +29,13 @@ pub fn run(args: &PackageArgs) -> Result<()> {
         );
     }
 
-    if !src_dir.join(crate::CONFIG_FILE_NAME).exists() {
+    // Kind-aware manifest check: a template dir has `template.kdl`, a skill
+    // bundle has `skills.kdl`. Only warn when NEITHER is present.
+    let has_template = src_dir.join(crate::CONFIG_FILE_NAME).exists();
+    let has_skills = src_dir.join("skills.kdl").exists();
+    if !has_template && !has_skills {
         eprintln!(
-            "warning: no {} found in {} — packaging anyway",
-            crate::CONFIG_FILE_NAME,
+            "warning: no template.kdl or skills.kdl found in {} — packaging anyway",
             src_dir.display()
         );
     }

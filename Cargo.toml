@@ -2,6 +2,22 @@
 name = "openeis-generate"
 version = "0.1.0"
 edition = "2024"
+description = "A project/template generator whose configuration is written in KDL instead of TOML"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/openeis-project/openeis-generate"
+homepage = "https://github.com/openeis-project/openeis-generate"
+documentation = "https://docs.rs/openeis-generate"
+keywords = ["kdl", "template", "scaffold", "generator", "cargo-generate"]
+categories = ["command-line-utilities", "development-tools", "template-engine"]
+# Demo/dev-only artifacts: not compiled into the binary and not needed by
+# crate consumers. Excluding them also dodges Cargo's refusal to package
+# filenames containing `|` (e.g. `{{ name | kebab_case }}.txt` in the
+# minimal example template).
+exclude = [
+    "example-templates/",
+    ".claude/",
+    "/target",
+]
 
 [dependencies]
 # kdl 6.7.1 的 v2 解析器把裸 `true`/`false`/`null` 当作标识符而非布尔值，
